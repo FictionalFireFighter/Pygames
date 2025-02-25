@@ -1,0 +1,389 @@
+import pygame
+import random
+import math
+
+# Initialize Pygame
+pygame.init()
+
+# Set up the display
+WIDTH = 800
+HEIGHT = 600
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Top Down Explorer")
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+BROWN = (139, 69, 19)
+RED = (255, 0, 0)
+YELLOW = (255, 255, 0)
+PURPLE = (128, 0, 128)
+ORANGE = (255, 165, 0)
+LIGHT_BLUE = (173, 216, 230)
+
+# Font setup
+font = pygame.font.SysFont('Arial', 24)
+
+# Player properties
+player_size = 20
+player_x = WIDTH // 2
+player_y = HEIGHT // 2
+player_normal_speed = 5
+player_water_speed = 2
+player_sprint_multiplier = 1.8  # Speed multiplier when sprinting
+player_speed = player_normal_speed
+player_facing = 0  # 0=right, 1=down, 2=left, 3=up
+
+# Health and breath system
+max_health = 100
+health = max_health
+max_breath = 100
+breath = max_breath
+breath_decrease_rate = 1  # How fast breath decreases in water
+breath_recovery_rate = 2  # How fast breath recovers on land
+sprint_breath_cost = 0.5  # How much breath is consumed per frame when sprinting
+health_decrease_rate = 10  # How much health decreases when hitting an enemy
+min_breath_for_game_over = 0  # Breath level that triggers game over (only in water)
+
+# Combat system
+class Projectile:
+    def __init__(self, x, y, direction, speed=10):
+        self.x = x
+        self.y = y
+        self.direction = direction
+        self.speed = speed
+        self.range = 150  # Maximum travel distance
+        self.traveled = 0
+        self.damage = 20
+        self.size = 8
+        
+    def update(self):
+        # Move the projectile based on direction
+        if self.direction == 0:  # Right
+            self.x += self.speed
+        elif self.direction == 1:  # Down
+            self.y += self.speed
+        elif self.direction == 2:  # Left
+            self.x -= self.speed
+        elif self.direction == 3:  # Up
+            self.y -= self.speed
+            
+        # Track distance traveled
+        self.traveled += self.speed
+        
+        # Check if out of range
+        return self.traveled >= self.range
+        
+    def draw(self, surface):
+        pygame.draw.circle(surface, LIGHT_BLUE, (int(self.x), int(self.y)), self.size)
+        
+    def get_rect(self):
+        return pygame.Rect(self.x - self.size, self.y - self.size, self.size * 2, self.size * 2)
+
+# Enemy class
+class Enemy:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.size = 25
+        self.speed = 3
+        self.max_health = 100
+        self.health = self.max_health
+        self.move_timer = 0
+        self.move_delay = 30  # Frames before changing direction
+        self.move_direction = random.randint(0, 3)  # 0=up, 1=right, 2=down, 3=left
+        
+    def update(self):
+        # Movement timer
+        self.move_timer += 1
+        if self.move_timer >= self.move_delay:
+            self.move_timer = 0
+            self.move_direction = random.randint(0, 3)
+        
+        # Calculate new position
+        new_x = self.x
+        new_y = self.y
+        
+        if self.move_direction == 0:  # Up
+            new_y -= self.speed
+        elif self.move_direction == 1:  # Right
+            new_x += self.speed
+        elif self.move_direction == 2:  # Down
+            new_y += self.speed
+        elif self.move_direction == 3:  # Left
+            new_x -= self.speed
+        
+        # Keep enemy in bounds
+        if 0 <= new_x <= WIDTH - self.size and 0 <= new_y <= HEIGHT - self.size:
+            self.x = new_x
+            self.y = new_y
+        else:
+            # If enemy would go out of bounds, change direction
+            self.move_direction = (self.move_direction + 2) % 4  # Reverse direction
+            
+    def draw(self, surface):
+        # Draw enemy with health bar
+        pygame.draw.rect(surface, PURPLE, (self.x, self.y, self.size, self.size))
+        
+        # Health bar (only if damaged)
+        if self.health < self.max_health:
+            bar_width = self.size
+            bar_height = 5
+            bar_fill = (self.health / self.max_health) * bar_width
+            pygame.draw.rect(surface, WHITE, (self.x, self.y - 10, bar_width, bar_height))
+            pygame.draw.rect(surface, RED, (self.x, self.y - 10, bar_fill, bar_height))
+    
+    def get_rect(self):
+        return pygame.Rect(self.x, self.y, self.size, self.size)
+    
+    def take_damage(self, amount):
+        self.health -= amount
+        return self.health <= 0  # Return True if enemy dies
+
+# Game state
+game_over = False
+is_sprinting = False
+score = 0
+
+# Game objects
+projectiles = []
+enemies = [Enemy(WIDTH // 4, HEIGHT // 4)]
+projectile_cooldown = 0
+projectile_cooldown_max = 30  # Frames between projectile firing
+damage_cooldown = 0
+damage_cooldown_max = 30  # Frames of invincibility after taking damage
+
+# Obstacle class
+class Obstacle:
+    def __init__(self, x, y, width, height):
+        self.rect = pygame.Rect(x, y, width, height)
+
+# Create map elements
+trees = []
+for _ in range(10):
+    x = random.randint(0, WIDTH - 30)
+    y = random.randint(0, HEIGHT - 30)
+    trees.append(Obstacle(x, y, 30, 30))
+
+water = Obstacle(200, 100, 150, 100)
+
+# Game loop
+clock = pygame.time.Clock()
+running = True
+
+while running:
+    # Event handling
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        # Add restart option when game is over
+        if game_over and event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_r:
+                # Reset game
+                player_x = WIDTH // 2
+                player_y = HEIGHT // 2
+                breath = max_breath
+                health = max_health
+                enemies = [Enemy(WIDTH // 4, HEIGHT // 4)]
+                projectiles = []
+                score = 0
+                game_over = False
+
+    if not game_over:
+        # Player movement
+        keys = pygame.key.get_pressed()
+        new_x = player_x
+        new_y = player_y
+        
+        # Check if sprinting (holding SHIFT)
+        is_sprinting = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+        
+        # Calculate actual speed
+        current_speed = player_speed
+        if is_sprinting and breath > 0:
+            current_speed *= player_sprint_multiplier
+            # Sprinting consumes breath but won't end game
+            breath -= sprint_breath_cost
+            if breath < 0:
+                breath = 0
+                is_sprinting = False  # Can't sprint with no breath
+        
+        # Determine player facing direction
+        prev_facing = player_facing
+        if keys[pygame.K_LEFT]:
+            new_x -= current_speed
+            player_facing = 2  # Left
+        if keys[pygame.K_RIGHT]:
+            new_x += current_speed
+            player_facing = 0  # Right
+        if keys[pygame.K_UP]:
+            new_y -= current_speed
+            player_facing = 3  # Up
+        if keys[pygame.K_DOWN]:
+            new_y += current_speed
+            player_facing = 1  # Down
+
+        # Create player rect for collision detection
+        player_rect = pygame.Rect(new_x, new_y, player_size, player_size)
+
+        # Check collisions with trees
+        tree_collision = False
+        for tree in trees:
+            if player_rect.colliderect(tree.rect):
+                tree_collision = True
+                break
+
+        # Check if player is in water
+        in_water = player_rect.colliderect(water.rect)
+        
+        # Set speed based on terrain
+        if in_water:
+            player_speed = player_water_speed
+            breath -= breath_decrease_rate
+            # Only end game if underwater breathing is depleted
+            if breath <= min_breath_for_game_over:
+                breath = 0
+                game_over = True
+        else:
+            player_speed = player_normal_speed
+            # Recover breath when not sprinting
+            if not is_sprinting:
+                breath = min(breath + breath_recovery_rate, max_breath)
+
+        # Update position if no collision with trees
+        if not tree_collision:
+            player_x = new_x
+            player_y = new_y
+
+        # Keep player in bounds
+        player_x = max(0, min(player_x, WIDTH - player_size))
+        player_y = max(0, min(player_y, HEIGHT - player_size))
+
+        # Automatic firing system
+        if projectile_cooldown > 0:
+            projectile_cooldown -= 1
+        else:
+            # Calculate projectile starting position
+            proj_x = player_x + player_size // 2
+            proj_y = player_y + player_size // 2
+            
+            # Create new projectile in the direction player is facing
+            projectiles.append(Projectile(proj_x, proj_y, player_facing))
+            projectile_cooldown = projectile_cooldown_max
+        
+        # Update projectiles
+        projectiles_to_remove = []
+        for i, proj in enumerate(projectiles):
+            # Update projectile position
+            if proj.update():
+                projectiles_to_remove.append(i)
+                continue
+                
+            # Check collision with enemies
+            for j, enemy in enumerate(enemies):
+                if proj.get_rect().colliderect(enemy.get_rect()):
+                    # Enemy hit by projectile
+                    if enemy.take_damage(proj.damage):
+                        # Enemy defeated
+                        enemies.pop(j)
+                        score += 10
+                        # Spawn a new enemy at a random location
+                        spawn_x = random.randint(50, WIDTH - 50)
+                        spawn_y = random.randint(50, HEIGHT - 50)
+                        enemies.append(Enemy(spawn_x, spawn_y))
+                    projectiles_to_remove.append(i)
+                    break
+        
+        # Remove projectiles
+        for i in sorted(projectiles_to_remove, reverse=True):
+            if i < len(projectiles):
+                projectiles.pop(i)
+        
+        # Update enemies
+        for enemy in enemies:
+            enemy.update()
+            
+            # Check collision with player
+            if damage_cooldown > 0:
+                damage_cooldown -= 1
+            
+            if enemy.get_rect().colliderect(player_rect) and damage_cooldown == 0:
+                health -= health_decrease_rate
+                damage_cooldown = damage_cooldown_max
+                if health <= 0:
+                    health = 0
+                    game_over = True
+
+    # Drawing
+    screen.fill(GREEN)  # Grass background
+    
+    # Draw water
+    pygame.draw.rect(screen, BLUE, water.rect)
+    
+    # Draw trees
+    for tree in trees:
+        pygame.draw.rect(screen, BROWN, tree.rect)
+    
+    # Draw projectiles
+    for proj in projectiles:
+        proj.draw(screen)
+    
+    # Draw enemies
+    for enemy in enemies:
+        enemy.draw(screen)
+    
+    # Draw player
+    player_color = BLACK
+    if is_sprinting and not game_over:
+        # Change player color when sprinting
+        player_color = ORANGE
+    elif damage_cooldown > 0 and not game_over:
+        # Flash player when hit (alternating between black and white)
+        if damage_cooldown % 6 < 3:
+            player_color = WHITE
+    pygame.draw.rect(screen, player_color, (player_x, player_y, player_size, player_size))
+    
+    # Draw breath bar
+    bar_width = 200
+    bar_height = 20
+    bar_fill = (breath / max_breath) * bar_width
+    bar_color = BLUE
+    if is_sprinting:
+        bar_color = ORANGE  # Change breath bar color when sprinting
+    pygame.draw.rect(screen, WHITE, (20, 20, bar_width, bar_height))
+    pygame.draw.rect(screen, bar_color, (20, 20, bar_fill, bar_height))
+    
+    # Draw health bar
+    health_bar_fill = (health / max_health) * bar_width
+    pygame.draw.rect(screen, WHITE, (20, 50, bar_width, bar_height))
+    pygame.draw.rect(screen, RED, (20, 50, health_bar_fill, bar_height))
+    
+    # Draw text
+    breath_text = font.render(f"Breath: {int(breath)}", True, BLACK)
+    health_text = font.render(f"Health: {int(health)}", True, BLACK)
+    score_text = font.render(f"Score: {score}", True, BLACK)
+    screen.blit(breath_text, (230, 20))
+    screen.blit(health_text, (230, 50))
+    screen.blit(score_text, (WIDTH - 120, 50))
+    
+    # Controls instructions
+    if not game_over:
+        sprint_text = font.render("Hold SHIFT to sprint", True, BLACK)
+        screen.blit(sprint_text, (WIDTH - 200, 20))
+    
+    # Game over message
+    if game_over:
+        cause = "OUT OF BREATH" if breath <= 0 else "OUT OF HEALTH"
+        game_over_text = font.render(f"GAME OVER! {cause}! Press R to restart", True, RED)
+        final_score_text = font.render(f"Final Score: {score}", True, RED)
+        screen.blit(game_over_text, (WIDTH//2 - 200, HEIGHT//2))
+        screen.blit(final_score_text, (WIDTH//2 - 80, HEIGHT//2 + 40))
+
+    # Update display
+    pygame.display.flip()
+    clock.tick(60)
+
+# Quit game
+pygame.quit()
