@@ -1,0 +1,407 @@
+import pygame
+import random
+import math
+import os
+
+pygame.init()
+
+WIDTH = 800
+HEIGHT = 600
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Top Down Explorer")
+
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+BROWN = (139, 69, 19)
+RED = (255, 0, 0)
+YELLOW = (255, 255, 0)
+PURPLE = (128, 0, 128)
+ORANGE = (255, 165, 0)
+LIGHT_BLUE = (173, 216, 230)
+
+font = pygame.font.SysFont('Arial', 24)
+input_font = pygame.font.SysFont('Arial', 30)
+
+player_size = 20
+player_x = WIDTH // 2
+player_y = HEIGHT // 2
+player_normal_speed = 5
+player_water_speed = 2
+player_sprint_multiplier = 1.8
+player_speed = player_normal_speed
+player_facing = 0
+
+max_health = 100
+health = max_health
+max_breath = 100
+breath = max_breath
+breath_decrease_rate = 1
+breath_recovery_rate = 2
+sprint_breath_cost = 0.5
+health_decrease_rate = 10
+min_breath_for_game_over = 0
+
+max_ammo = 50
+ammo = max_ammo
+ammo_cost = 1
+
+class Projectile:
+    damage = 20
+    
+    def __init__(self, x, y, direction, speed=10):
+        self.x = x
+        self.y = y
+        self.direction = direction
+        self.speed = speed
+        self.range = 150
+        self.traveled = 0
+        self.size = 8
+        
+    def update(self):
+        if self.direction == 0: self.x += self.speed
+        elif self.direction == 1: self.y += self.speed
+        elif self.direction == 2: self.x -= self.speed
+        elif self.direction == 3: self.y -= self.speed
+        self.traveled += self.speed
+        return self.traveled >= self.range
+        
+    def draw(self, surface):
+        pygame.draw.circle(surface, LIGHT_BLUE, (int(self.x), int(self.y)), self.size)
+        
+    def get_rect(self):
+        return pygame.Rect(self.x - self.size, self.y - self.size, self.size * 2, self.size * 2)
+
+class Enemy:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.size = 25
+        self.speed = 3
+        self.max_health = 100
+        self.health = self.max_health
+        self.move_timer = 0
+        self.move_delay = 30
+        self.move_direction = random.randint(0, 3)
+        
+    def update(self):
+        self.move_timer += 1
+        if self.move_timer >= self.move_delay:
+            self.move_timer = 0
+            self.move_direction = random.randint(0, 3)
+        new_x, new_y = self.x, self.y
+        if self.move_direction == 0: new_y -= self.speed
+        elif self.move_direction == 1: new_x += self.speed
+        elif self.move_direction == 2: new_y += self.speed
+        elif self.move_direction == 3: new_x -= self.speed
+        if 0 <= new_x <= WIDTH - self.size and 0 <= new_y <= HEIGHT - self.size:
+            self.x, self.y = new_x, new_y
+        else:
+            self.move_direction = (self.move_direction + 2) % 4
+            
+    def draw(self, surface):
+        pygame.draw.rect(surface, PURPLE, (self.x, self.y, self.size, self.size))
+        if self.health < self.max_health:
+            bar_width, bar_height = self.size, 5
+            bar_fill = (self.health / self.max_health) * bar_width
+            pygame.draw.rect(surface, WHITE, (self.x, self.y - 10, bar_width, bar_height))
+            pygame.draw.rect(surface, RED, (self.x, self.y - 10, bar_fill, bar_height))
+    
+    def get_rect(self):
+        return pygame.Rect(self.x, self.y, self.size, self.size)
+    
+    def take_damage(self, amount):
+        self.health -= amount
+        return self.health <= 0
+
+class Obstacle:
+    def __init__(self, x, y, width, height):
+        self.rect = pygame.Rect(x, y, width, height)
+
+class Drop:
+    def __init__(self, x, y, drop_type):
+        self.x = x
+        self.y = y
+        self.size = 15
+        self.drop_type = drop_type
+        self.color = YELLOW if drop_type == "ammo" else RED
+        
+    def draw(self, surface):
+        pygame.draw.rect(surface, self.color, (self.x, self.y, self.size, self.size))
+    
+    def get_rect(self):
+        return pygame.Rect(self.x, self.y, self.size, self.size)
+
+# Game state
+game_over = False
+is_sprinting = False
+level = 1
+enemies_to_defeat = 1
+enemies_defeated = 0
+upgrading = False
+leaderboard = False
+entering_name = False
+player_name = ""
+
+# Game objects
+projectiles = []
+enemies = [Enemy(WIDTH // 4, HEIGHT // 4)]
+projectile_cooldown = 0
+projectile_cooldown_max = 30
+damage_cooldown = 0
+damage_cooldown_max = 30
+drops = []
+drop_timer = 0
+drop_interval = 600
+
+trees = []
+for _ in range(10):
+    x = random.randint(0, WIDTH - 30)
+    y = random.randint(0, HEIGHT - 30)
+    trees.append(Obstacle(x, y, 30, 30))
+
+water = Obstacle(200, 100, 150, 100)
+
+# Leaderboard file
+LEADERBOARD_FILE = "leaderboard.txt"
+
+def load_leaderboard():
+    if not os.path.exists(LEADERBOARD_FILE):
+        return []
+    with open(LEADERBOARD_FILE, "r") as f:
+        scores = [line.strip().split(",") for line in f.readlines()]
+        return [(name, int(score)) for name, score in scores]
+    return []
+
+def save_leaderboard(scores):
+    with open(LEADERBOARD_FILE, "w") as f:
+        for name, score in scores:
+            f.write(f"{name},{score}\n")
+
+clock = pygame.time.Clock()
+running = True
+
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        if game_over and not leaderboard and not entering_name and event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_r:
+                player_x, player_y = WIDTH // 2, HEIGHT // 2
+                breath, health = max_breath, max_health
+                ammo = max_ammo
+                enemies = [Enemy(WIDTH // 4, HEIGHT // 4)]
+                projectiles = []
+                drops = []
+                level = 1
+                enemies_to_defeat = 1
+                enemies_defeated = 0
+                game_over = False
+                upgrading = False
+                player_normal_speed = 5
+                player_water_speed = 2
+                Projectile.damage = 20
+                max_health = 100
+                max_breath = 100
+                max_ammo = 50
+            elif event.key == pygame.K_l:  # Press L for leaderboard
+                leaderboard = True
+        if upgrading and event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_1:
+                player_normal_speed += 1
+                player_water_speed += 0.5
+                upgrading = False
+                for _ in range(enemies_to_defeat):
+                    enemies.append(Enemy(random.randint(50, WIDTH - 50), random.randint(50, HEIGHT - 50)))
+            elif event.key == pygame.K_2:
+                Projectile.damage += 5
+                upgrading = False
+                for _ in range(enemies_to_defeat):
+                    enemies.append(Enemy(random.randint(50, WIDTH - 50), random.randint(50, HEIGHT - 50)))
+            elif event.key == pygame.K_3:
+                max_health += 20
+                health = max_health
+                upgrading = False
+                for _ in range(enemies_to_defeat):
+                    enemies.append(Enemy(random.randint(50, WIDTH - 50), random.randint(50, HEIGHT - 50)))
+            elif event.key == pygame.K_4:
+                max_breath += 20
+                breath = max_breath
+                upgrading = False
+                for _ in range(enemies_to_defeat):
+                    enemies.append(Enemy(random.randint(50, WIDTH - 50), random.randint(50, HEIGHT - 50)))
+            elif event.key == pygame.K_5:
+                max_ammo += 10
+                ammo = max_ammo
+                upgrading = False
+                for _ in range(enemies_to_defeat):
+                    enemies.append(Enemy(random.randint(50, WIDTH - 50), random.randint(50, HEIGHT - 50)))
+        if leaderboard and event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_s:  # Press S to save score
+                entering_name = True
+            elif event.key == pygame.K_q:  # Press Q to quit leaderboard
+                leaderboard = False
+        if entering_name and event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_RETURN and player_name:
+                scores = load_leaderboard()
+                scores.append((player_name, level - 1))  # Save final level reached
+                scores.sort(key=lambda x: x[1], reverse=True)  # Sort by score descending
+                scores = scores[:10]  # Keep top 10
+                save_leaderboard(scores)
+                entering_name = False
+                player_name = ""
+            elif event.key == pygame.K_BACKSPACE:
+                player_name = player_name[:-1]
+            elif event.unicode.isalnum() and len(player_name) < 10:  # Limit name length
+                player_name += event.unicode.upper()
+
+    if not game_over and not upgrading:
+        keys = pygame.key.get_pressed()
+        new_x, new_y = player_x, player_y
+        is_sprinting = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+        current_speed = player_speed * (player_sprint_multiplier if is_sprinting and breath > 0 else 1)
+        if is_sprinting: breath = max(0, breath - sprint_breath_cost)
+        
+        if keys[pygame.K_LEFT]: new_x -= current_speed; player_facing = 2
+        if keys[pygame.K_RIGHT]: new_x += current_speed; player_facing = 0
+        if keys[pygame.K_UP]: new_y -= current_speed; player_facing = 3
+        if keys[pygame.K_DOWN]: new_y += current_speed; player_facing = 1
+
+        player_rect = pygame.Rect(new_x, new_y, player_size, player_size)
+        tree_collision = any(player_rect.colliderect(tree.rect) for tree in trees)
+        in_water = player_rect.colliderect(water.rect)
+        player_speed = player_water_speed if in_water else player_normal_speed
+        
+        if in_water:
+            breath -= breath_decrease_rate
+            if breath <= min_breath_for_game_over: game_over = True
+        else:
+            breath = min(breath + breath_recovery_rate, max_breath) if not is_sprinting else breath
+
+        if not tree_collision:
+            player_x, player_y = new_x, new_y
+
+        player_x = max(0, min(player_x, WIDTH - player_size))
+        player_y = max(0, min(player_y, HEIGHT - player_size))
+
+        if projectile_cooldown > 0: projectile_cooldown -= 1
+        if keys[pygame.K_SPACE] and projectile_cooldown == 0 and ammo >= ammo_cost:
+            proj_x, proj_y = player_x + player_size // 2, player_y + player_size // 2
+            projectiles.append(Projectile(proj_x, proj_y, player_facing))
+            ammo -= ammo_cost
+            projectile_cooldown = projectile_cooldown_max
+        
+        projectiles_to_remove = []
+        for i, proj in enumerate(projectiles):
+            if proj.update():
+                projectiles_to_remove.append(i)
+                continue
+            for j, enemy in enumerate(enemies):
+                if proj.get_rect().colliderect(enemy.get_rect()):
+                    if enemy.take_damage(Projectile.damage):
+                        enemies.pop(j)
+                        enemies_defeated += 1
+                        if enemies_defeated >= enemies_to_defeat and len(enemies) == 0:
+                            level += 1
+                            enemies_to_defeat = level
+                            enemies_defeated = 0
+                            upgrading = True
+                    projectiles_to_remove.append(i)
+                    break
+        
+        for i in sorted(projectiles_to_remove, reverse=True):
+            if i < len(projectiles): projectiles.pop(i)
+        
+        drop_timer += 1
+        if drop_timer >= drop_interval:
+            drop_timer = 0
+            drop_type = random.choice(["ammo", "health"])
+            drop_x = random.randint(50, WIDTH - 50)
+            drop_y = random.randint(50, HEIGHT - 50)
+            drops.append(Drop(drop_x, drop_y, drop_type))
+        
+        drops_to_remove = []
+        for i, drop in enumerate(drops):
+            if player_rect.colliderect(drop.get_rect()):
+                if drop.drop_type == "ammo":
+                    ammo = min(ammo + 20, max_ammo)
+                elif drop.drop_type == "health":
+                    health = min(health + 25, max_health)
+                drops_to_remove.append(i)
+        
+        for i in sorted(drops_to_remove, reverse=True):
+            if i < len(drops): drops.pop(i)
+        
+        for enemy in enemies:
+            enemy.update()
+            if damage_cooldown > 0: damage_cooldown -= 1
+            if enemy.get_rect().colliderect(player_rect) and damage_cooldown == 0:
+                health -= health_decrease_rate
+                damage_cooldown = damage_cooldown_max
+                if health <= 0: game_over = True
+
+    # Drawing
+    screen.fill(GREEN)
+    pygame.draw.rect(screen, BLUE, water.rect)
+    for tree in trees: pygame.draw.rect(screen, BROWN, tree.rect)
+    for proj in projectiles: proj.draw(screen)
+    for enemy in enemies: enemy.draw(screen)
+    for drop in drops: drop.draw(screen)
+    
+    player_color = BLACK
+    if is_sprinting and not game_over and not upgrading: player_color = ORANGE
+    elif damage_cooldown > 0 and not game_over and not upgrading: player_color = WHITE if damage_cooldown % 6 < 3 else BLACK
+    pygame.draw.rect(screen, player_color, (player_x, player_y, player_size, player_size))
+    
+    bar_width, bar_height = 200, 20
+    pygame.draw.rect(screen, WHITE, (20, 20, bar_width, bar_height))
+    pygame.draw.rect(screen, ORANGE if is_sprinting else BLUE, (20, 20, (breath / max_breath) * bar_width, bar_height))
+    pygame.draw.rect(screen, WHITE, (20, 50, bar_width, bar_height))
+    pygame.draw.rect(screen, RED, (20, 50, (health / max_health) * bar_width, bar_height))
+    pygame.draw.rect(screen, WHITE, (20, 80, bar_width, bar_height))
+    pygame.draw.rect(screen, PURPLE, (20, 80, (ammo / max_ammo) * bar_width, bar_height))
+    
+    screen.blit(font.render(f"Breath: {int(breath)}", True, BLACK), (230, 20))
+    screen.blit(font.render(f"Health: {int(health)}", True, BLACK), (230, 50))
+    screen.blit(font.render(f"Ammo: {ammo}", True, BLACK), (230, 80))
+    screen.blit(font.render(f"Level: {level}", True, BLACK), (20, HEIGHT - 60))
+    screen.blit(font.render(f"Enemies Left: {enemies_to_defeat - enemies_defeated}/{enemies_to_defeat}", True, BLACK), (20, HEIGHT - 30))
+    if not game_over and not upgrading: 
+        screen.blit(font.render("Hold SHIFT to sprint", True, BLACK), (WIDTH - 200, 20))
+        screen.blit(font.render("Press SPACE to shoot", True, BLACK), (WIDTH - 200, 40))
+    
+    if game_over and not leaderboard and not entering_name:
+        cause = "OUT OF BREATH" if breath <= 0 else "OUT OF HEALTH"
+        screen.blit(font.render(f"GAME OVER! {cause}! Press R to restart", True, RED), (WIDTH//2 - 200, HEIGHT//2 - 30))
+        screen.blit(font.render(f"Final Level: {level - 1}", True, RED), (WIDTH//2 - 80, HEIGHT//2))
+        screen.blit(font.render("Press L for Leaderboard", True, RED), (WIDTH//2 - 120, HEIGHT//2 + 30))
+    
+    if upgrading:
+        screen.blit(font.render("Level Up! Choose an upgrade (1-5):", True, YELLOW), (WIDTH//2 - 200, HEIGHT//2 - 60))
+        screen.blit(font.render("1. Speed (+1 normal, +0.5 water)", True, YELLOW), (WIDTH//2 - 200, HEIGHT//2 - 30))
+        screen.blit(font.render("2. Damage (+5)", True, YELLOW), (WIDTH//2 - 200, HEIGHT//2))
+        screen.blit(font.render("3. Max Health (+20)", True, YELLOW), (WIDTH//2 - 200, HEIGHT//2 + 30))
+        screen.blit(font.render("4. Max Breath (+20)", True, YELLOW), (WIDTH//2 - 200, HEIGHT//2 + 60))
+        screen.blit(font.render("5. Max Ammo (+10)", True, YELLOW), (WIDTH//2 - 200, HEIGHT//2 + 90))
+
+    if leaderboard:
+        screen.fill(BLACK)
+        screen.blit(font.render("Leaderboard", True, WHITE), (WIDTH//2 - 80, 50))
+        scores = load_leaderboard()
+        for i, (name, score) in enumerate(scores[:10], 1):  # Top 10 scores
+            screen.blit(font.render(f"{i}. {name}: {score}", True, WHITE), (WIDTH//2 - 100, 100 + i * 30))
+        screen.blit(font.render("Press S to save your score", True, YELLOW), (WIDTH//2 - 140, HEIGHT - 60))
+        screen.blit(font.render("Press Q to return", True, YELLOW), (WIDTH//2 - 100, HEIGHT - 30))
+    
+    if entering_name:
+        screen.fill(BLACK)
+        screen.blit(font.render("Enter your name (max 10 chars):", True, WHITE), (WIDTH//2 - 180, HEIGHT//2 - 30))
+        name_surface = input_font.render(player_name, True, YELLOW)
+        screen.blit(name_surface, (WIDTH//2 - name_surface.get_width()//2, HEIGHT//2))
+        screen.blit(font.render("Press Enter to save", True, WHITE), (WIDTH//2 - 100, HEIGHT//2 + 40))
+
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()
